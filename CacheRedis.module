@@ -1,0 +1,398 @@
+<?php namespace ProcessWire;
+
+/**
+ * ProcessWire Redis Cache Module
+ *
+ * Simple cache for storing strings or arrays in a Redis memory database.
+ * Allows to configure multiple servers from a cluster.
+ *
+ * You can access the module through one of these means:
+ * $redis API variable
+ * wire('redis')
+ * $this->redis
+ *
+ * ~~~~~
+ * // Get a cache named 'foo' that lasts for 1 hour (aka 3600 seconds)
+ * $value = $redis->fetch('foo', 3600, function() {
+ *   // this is called if cache expired or does not exist, 
+ *   // so generate a new cache value here and return it
+ *   return "This is the cached value";
+ * });
+ * // Delete a value from the cache
+ * $redis->delete('foo');
+ * // Store a value in the cache
+ * $redis->store('foo', 3600, ["this" => "is", "stored" => "in", "the" => "cache"]);
+ * ~~~~~
+ * 
+ */
+
+
+class CacheRedis extends WireData implements Module {
+
+	protected $redis = false;
+	protected $connected = false;
+	
+	const expireDaily = 86400;
+	
+	const expireSave = "save";
+	
+	const expireNever = 0;
+	
+	public static function getModuleInfo() {
+		return [
+			"title"		=>	_x("ProcessWire Redis Cache", __FILE__),
+			"summary"	=>	_x("Simple interface to Redis storage", __FILE__),
+			"version"	=>	"0.0.1",
+			"autoload"	=>	true,
+			"singular"	=>	true
+		];
+	}
+	
+	/**
+	 * Initialize the module and configure the connection.
+	 *
+	 */
+	public function init() {
+		if(! $this->cacheactive) return;
+		
+		try {
+			$this->redis = new \Redis();
+			$this->connected =  $this->unix ?
+								$this->redis->connect($this->servername) :
+								$this->redis->connect(($this->tls ? 'tls://' : '') . $this->servername, $this->serverport);
+			if($this->useAuth) {
+				$this->connected = $this->redis->auth($this->password);
+			}
+			$this->redis->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_PHP);
+		} catch(Exception $e) {
+			$this->log("Error connecting to Redis: {$e->message}");
+		}
+		
+		$this->wire('redis', $this);
+
+		$this->addHookAfter("Pages::saved", $this, "maintenanceSave");
+	}
+		
+
+	/**
+	 * Retrieve a cache value or render it and store it with
+	 * the given expiry time.
+	 *
+	 * You can retrieve multiple values in one go by passing an array of key names
+	 * as the first argument $name. In that case, you cannot pass a function as
+	 * the third parameter, i.e. get and setting multiple values with one call
+	 * doesn't work.
+	 *
+	 * Provided $func may specify any arguments that correspond with the names of API vars
+	 * and it will be sent those arguments. 
+	 * 
+	 * Provided $func may either echo or return it's output. If any value is returned by
+	 * the function it will be used as the cache value. If no value is returned, then 
+	 * the output buffer will be used as the cache value. 
+	 * 
+	 * @param string $name
+	 * @param int|null $expire Expiry time, either in seconds (maximum value is 2592000 = 30 days) or as a unix timestamp
+	 * @param callable $func
+	 * @return bool|string
+	 */
+	public function fetch($name, $expire = 86400, $func = null) {
+
+		if(! $this->connected) return false;
+
+		if(!is_int($expire) && !is_string($expire) && is_callable($expire)) {
+			$_func = $func;
+			$func = $expire; 
+			$expire = $_func;
+			unset($_func);
+		}
+
+		$multi = is_array($name); // retrieving multiple caches at once?
+		if($multi) {
+			$names = $name;
+		} else {
+			$names = [$name];
+		}
+		
+		if($multi && !is_null($func)) {
+			throw new WireException("Function (\$func) may not be specified to \$redis->fetch() when requesting multiple caches.");
+		}
+
+		$val = $multi ? [] : "";
+		if($multi) {
+			$val = $this->redis->mget($names);
+		} else {
+			if(is_null($func))
+				$val = $this->redis->get($name);
+			else
+				$val = $this->getOrSave($name, $expire, $func);
+		}
+		
+		return $val;
+	}
+
+
+	/**
+	 * Retrieve a cache value or render it and store it with
+	 * the given expiry time.
+	 *
+	 * @param string $name
+	 * @param int $expire
+	 * @param callable $func
+	 * @return bool|string
+	 */
+	protected function getOrSave($name, $expire, $func) {
+		
+		$val = $this->redis->get($name);
+		if($val) return $val;
+		
+		$ref = new \ReflectionFunction($func);
+		$params = $ref->getParameters(); // requested arguments
+		$args = array(); // arguments we provide
+		
+		foreach($params as $param) {
+			$arg = null;
+			// if requested param is an API variable we will provide it
+			if(preg_match('/\$([_a-zA-Z0-9]+)\b/', $param, $matches)) $arg = $this->wire($matches[1]);
+			$args[] = $arg;
+		}
+
+		ob_start();
+		
+		if(count($args)) {
+			$value = call_user_func_array($func, $args);
+		} else {
+			$value = $func();
+		}
+		
+		$out = ob_get_contents();
+		ob_end_clean();
+		
+		if(empty($value) && !empty($out)) $value = $out; 
+
+		if($value !== false) {
+			$this->redis->setEx($name, $expire, $value);
+		}
+		
+		return $value;
+	}
+
+	
+	/**
+	 * Store one or multiple values in the cache
+	 *
+	 * To set multiple values in one go, pass an associative array with keys and their values
+	 * in $name.
+	 *
+	 * @param string|array $name
+	 * @param int $expire
+	 * @param string|null $value
+	 *
+	 */
+	 public function store($name, $expire, $value = null) {
+	 	if(! $this->connected) return false;
+ 		if(! is_array($name)) {
+	 		if(is_null($value)) return false;
+			$name = [$name => $value];
+	 	}
+	 	$ret = true;
+	 	foreach($name as $k => $v) {
+	 		if(! $this->redis->setEx($k, $expire, $v))
+	 			$ret = false;
+	 	}
+	 	return false;
+	 }
+
+	/**
+	 * Delete a value from the cache
+	 *
+	 * @param string|array $name
+	 *
+	 */
+	public function delete($name) {
+		if(! $this->connected)
+			return;
+		if(! is_array($name))
+			$name = [$name];
+		$this->redis->delete($name);
+	}
+	
+	/**
+	 * Delete all values from the cache
+	 *
+	 */
+	public function flush() {
+		if(! $this->connected)
+			return;
+		$this->redis->flushAll();
+	}
+
+
+	/**
+	 * Render a file as a ProcessWire template file and cache the output
+	 *
+	 * This method is similar to the `$files->render()` method and actually delegates the file
+	 * rendering to that method (when creating the cache). The important difference is that this
+	 * method caches the output according to WireCache rules for the `$expire` argument, rather
+	 * than re-rendering the file on every call. 
+	 *
+	 * If there are any changes to the source file `$filename` the cache will be automatically
+	 * re-created, regardless of what is specified for the `$expire` argument.
+	 * 
+	 * ~~~~~~
+	 * // render primary nav from site/templates/partials/primary-nav.php 
+	 * // and cache for 3600 seconds (1 hour)
+	 * echo $redis->renderFile('partials/primary-nav.php', 3600); 
+	 * ~~~~~~
+	 *
+	 * @param string $filename Filename to render (typically PHP file). 
+	 *   Can be full path/file, or dir/file relative to current work directory (which is typically /site/templates/).
+	 *   If providing a file relative to current dir, it should not start with "/". 
+	 *   File must be somewhere within site/templates/, site/modules/ or wire/modules/, or provide your own `allowedPaths` option. 
+	 *   Please note that $filename receives API variables already (you don’t have to provide them).
+	 * @param int|Page|string|null $expire Lifetime of this cache, in seconds, OR one of the following:
+	 *  - Specify one of the `CacheRedis::expire*` constants.
+	 *  - Specify the future date you want it to expire (as unix timestamp )
+	 *  - Specify `CacheRedis::expireNever` to prevent expiration.
+	 *  - Specify `CacheRedis::expireSave` to expire when any page or template is saved.
+	 *  - Omit for default value, which is `CacheRedis::expireDaily`. 
+	 * @param array $options Accepts all options for the `WireFileTools::render()` method, plus these additional ones:
+	 *  - `name` (string): Optionally specify a unique name for this cache, otherwise $filename will be used as the unique name. (default='')
+	 *  - `vars` (array): Optional associative array of extra variables to send to template file. (default=[])
+	 *  - `allowedPaths` (array): Array of paths that are allowed (default is anywhere within templates, core modules and site modules)
+	 *  - `throwExceptions` (bool): Throw exceptions when fatal error occurs? (default=true)
+	 * @return string|bool Rendered template file or boolean false on fatal error (and throwExceptions disabled)
+	 * @throws WireException if given file doesn’t exist
+	 * @see WireFileTools::render()
+	 *
+	 */
+	public function renderFile($filename, $expire = 86400, array $options = array()) {
+
+		$defaults = array(
+			'name' => '',
+			'vars' => array(),
+			'throwExceptions' => true,
+		);
+
+		$out = null;
+		$paths = $this->wire('config')->paths;
+		$files = $this->wire('files');
+		$filename = $files->unixFileName($filename);
+		
+		if(strpos($filename, '/') !== 0 && strpos($filename, ':') === false && strpos($filename, '//') === false) {
+			// make relative to current path
+			$currentPath = $files->currentPath();
+			if($files->fileInPath($filename, $currentPath)) {
+				$f = $currentPath . $filename;
+				if(file_exists($f)) $filename = $f;
+			}
+		}
+		
+		$options = array_merge($defaults, $options);
+		$mtime = filemtime($filename);
+		$name = str_replace($paths->root, '', $filename);
+		$ns = 'cache.' . ($options['name'] ? $options['name'] : 'renderFile');
+		$cacheName = $this->cacheName($name, $ns);
+
+		if($mtime === false) {
+			if($options['throwExceptions']) throw new WireException("File not found: $filename");
+			return false;
+		}
+
+		$data = $this->redis->get($cacheName);
+
+		// cache value is array where [ 0=created, 1='value' ]
+		if(!is_array($data)) {
+			// cache does not exist or is older source file mtime
+			$out = $this->wire('files')->render($filename, $options['vars'], $options);
+			if($out === false) return false;
+			$data = array(time(), $out);
+
+			if($expire == self::expireSave) $expire = 0;
+			$this->store($cacheName, $expire, $data);
+			$this->setExpireSave($cacheName);
+		} else {
+			$out = $data[1];
+		}
+
+		return $out;
+	}
+
+
+	/**
+	 * Run cache maintenance, deleting all cache entries that were
+	 * added with CacheRedis::expireSave
+	 *
+	 */
+	public function maintenanceSave() {
+		if(! $this->connected) return;
+		$this->session->message("maintenanceSave");
+		$expireKey = md5("expireSave");
+		while(($key = $this->redis->sPop($expireKey)) !== false) {
+			$this->redis->message("Deleting cache entry for $key");
+			$this->delete($key);
+		}
+	}
+
+	
+	protected function setExpireSave($name) {
+		if(! $this->connected) return;
+		$expireKey = md5("expireSave");
+		$this->redis->sAdd($expireKey, $name);
+	}
+
+
+	/**
+	 * Make sure a cache name is of the right length and format for a cache name
+	 *
+	 * @param string $name Name including namespace (if applicable)
+	 * @param bool|string $ns True to allow namespace present, false to prevent, or specify namespace to add to name if not already present.
+	 * @return string
+	 *
+	 */
+	protected function cacheName($name, $ns = true) {
+
+		$maxLength = 190;
+		$name = trim($name);
+
+		if($ns === false) {
+			// namespace not allowed (cache name is NAME only)
+			while(strpos($name, '__') !== false) $name = str_replace('__', '_', $name);
+			if(strlen($name) > $maxLength) $name = md5($name);
+			return $name;
+		}
+
+		if(is_string($ns) && strlen($ns)) {
+			// a namespace has been supplied
+			while(strpos($name, '__') !== false) $name = str_replace('__', '_', $name);
+			while(strpos($ns, '__') !== false) $ns = str_replace('__', '_', $ns);
+			$ns = rtrim($ns, '_') . '__';
+			if(strpos($name, $ns) === 0) {
+				// name already has this namespace
+			} else {
+				// prepend namespace to name
+				$name = $ns . $name;
+			}
+		}
+
+		if(strlen($name) <= $maxLength) {
+			// name already in bounds
+			return $name;
+		}
+
+		// at this point we have a cache name that is too long
+		if(strpos($name, '__') !== false) {
+			// has namespace
+			list($ns, $name) = explode('__', $name, 2);
+			while(strpos($name, '__') !== false) $name = str_replace('__', '_', $name);
+			if(strlen($name) > 32) $name = md5($name);
+			if(strlen($ns . '__' . $name) > $maxLength) $ns = md5($ns); // not likely
+			$name = $ns . '__' . $name;
+		} else {
+			// no namespace
+			$name = md5($name);
+		}
+
+		return $name;
+	}
+
+}
