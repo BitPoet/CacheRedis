@@ -1,4 +1,4 @@
-# PwMemcache
+# CacheRedis
 ProcessWire interface to Redis memory cache
 
 ## Purpose
