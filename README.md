@@ -73,7 +73,8 @@ echo $redis->renderFile('partials/primary-nav.php', 3600);
 
 - int|string `$expire`
 	 - Specify one of the `CacheRedis::expire*` constants.
-	 - Specify the future date you want it to expire (as unix timestamp )
+	 - Specify the time in seconds until expiry, up to 30 days.
+	 - Specify the future date you want it to expire (any value above 2592000 will be treated as a unix timestamp).
 	 - Specify `CacheRedis::expireNever` to prevent expiration.
 	 - Specify `CacheRedis::expireSave` to expire when any page or template is saved.
 	 - Omit for default value, which is `CacheRedis::expireDaily`. 

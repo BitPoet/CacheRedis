@@ -196,8 +196,16 @@ class CacheRedis extends WireData implements Module {
 	 	}
 	 	$ret = true;
 	 	foreach($name as $k => $v) {
-	 		if(! $this->redis->setEx($k, $expire, $v))
-	 			$ret = false;
+	 		if($expire === null || $expire === 0) {
+	 			if(! $this->redis->set($k, $v))
+		 			$ret = false;
+	 		} elseif($expire <= 2592000) {
+	 			if(! $this->redis->setEx($k, time() + $expire, $v))
+		 			$ret = false;
+	 		} else {
+		 		if(! $this->redis->setEx($k, $expire, $v))
+		 			$ret = false;
+		 	}
 	 	}
 	 	return false;
 	 }
