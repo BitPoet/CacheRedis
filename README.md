@@ -8,7 +8,7 @@ This module provides a simple interface to the [phpredis](https://github.com/php
 Compatible with ProcessWire 3.x
 
 ## Status
-Rough Beta, use with care
+Alpha, WiP, use with care
 
 ## Prerequisites
 The phpredis extension must be installed.
