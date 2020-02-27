@@ -42,7 +42,7 @@ class CacheRedis extends WireData implements Module {
 		return [
 			"title"		=>	_x("ProcessWire Redis Cache", __FILE__),
 			"summary"	=>	_x("Simple interface to Redis storage", __FILE__),
-			"version"	=>	"0.0.1",
+			"version"	=>	"0.0.2",
 			"autoload"	=>	true,
 			"singular"	=>	true
 		];
@@ -188,7 +188,7 @@ class CacheRedis extends WireData implements Module {
 	 * @param string|null $value
 	 *
 	 */
-	 public function store($name, $expire, $value = null) {
+	 public function store($name, $expire = 0, $value = null) {
 	 	if(! $this->connected) return false;
  		if(! is_array($name)) {
 	 		if(is_null($value)) return false;
@@ -207,8 +207,42 @@ class CacheRedis extends WireData implements Module {
 		 			$ret = false;
 		 	}
 	 	}
-	 	return false;
+	 	return $ret;
 	 }
+
+	/**
+	 * Store a list value in the cache
+	 *
+	 * To set multiple values in one go, pass an associative array with keys and their values
+	 * in $name.
+	 *
+	 * @param string $name
+	 * @param int $expire
+	 * @param array $value
+	 *
+	 */
+	 public function storeList($name, $expire = 0, $value = []) {
+	 	if(! $this->connected) return false;
+	 	$ret = true;
+	 	$this->redis->del($name);
+	 	foreach($value as $v) {
+ 			if(! $this->redis->rPush($name, $v)) {
+	 			$ret = false;
+	 		} else {
+		 		if($expire === null || $expire === 0) {
+		 			// default
+		 		} elseif($expire <= 2592000) {
+		 			if(! $this->redis->expire($name, time() + $expire))
+			 			$ret = false;
+		 		} else {
+			 		if(! $this->redis->expire($name, $expire))
+			 			$ret = false;
+		 		}
+		 	}
+		}
+	 	return $ret;
+	 }
+
 
 	/**
 	 * Delete a value from the cache
@@ -221,7 +255,7 @@ class CacheRedis extends WireData implements Module {
 			return;
 		if(! is_array($name))
 			$name = [$name];
-		$this->redis->delete($name);
+		$this->redis->del($name);
 	}
 	
 	/**
@@ -257,12 +291,15 @@ class CacheRedis extends WireData implements Module {
 	 *   If providing a file relative to current dir, it should not start with "/". 
 	 *   File must be somewhere within site/templates/, site/modules/ or wire/modules/, or provide your own `allowedPaths` option. 
 	 *   Please note that $filename receives API variables already (you don’t have to provide them).
-	 * @param int|Page|string|null $expire Lifetime of this cache, in seconds, OR one of the following:
+	 * @param int|Page|string|array|null $expire Lifetime of this cache, in seconds, OR one of the following:
 	 *  - Specify one of the `CacheRedis::expire*` constants.
 	 *  - Specify the future date you want it to expire (as unix timestamp )
 	 *  - Specify `CacheRedis::expireNever` to prevent expiration.
 	 *  - Specify `CacheRedis::expireSave` to expire when any page or template is saved.
+	 *  - Specify a PW selector. The cache will be cleared every time a page is saved that matches this selector.
 	 *  - Omit for default value, which is `CacheRedis::expireDaily`. 
+	 *  - You can pass multiple expires as an array. This can make sense if you have multiple selectors to
+	 *    match pages that should clear the cache on save or specify both a selector and a maximum lifetime.
 	 * @param array $options Accepts all options for the `WireFileTools::render()` method, plus these additional ones:
 	 *  - `name` (string): Optionally specify a unique name for this cache, otherwise $filename will be used as the unique name. (default='')
 	 *  - `vars` (array): Optional associative array of extra variables to send to template file. (default=[])
@@ -306,20 +343,26 @@ class CacheRedis extends WireData implements Module {
 			return false;
 		}
 
-		$data = $this->redis->get($cacheName);
+		$data = $this->redis->lRange($cacheName, 0, -1);
 
 		// cache value is array where [ 0=created, 1='value' ]
-		if(!is_array($data)) {
+		if(is_array($data) && count($data) > 1 && $data[0] >= $mtime) {
+			$out = $data[1];
+		} else {
 			// cache does not exist or is older source file mtime
 			$out = $this->wire('files')->render($filename, $options['vars'], $options);
 			if($out === false) return false;
 			$data = array(time(), $out);
 
-			if($expire == self::expireSave) $expire = 0;
-			$this->store($cacheName, $expire, $data);
-			$this->setExpireSave($cacheName);
-		} else {
-			$out = $data[1];
+			if(! is_array($expire)) $expire = [$expire];
+			foreach($expire as $exp) {
+				$expireStore = (ctype_digit($exp) || $exp == self::expireSave) ? $exp : 0;
+				$this->storeList($cacheName, $expireStore, [$mtime, $out]);
+				if($exp == self::expireSave) $this->setExpireSave($cacheName);
+				if(! ctype_digit($expire)) {
+					$this->setExpireSelector($exp, $cacheName);
+				}
+			}
 		}
 
 		return $out;
@@ -328,24 +371,124 @@ class CacheRedis extends WireData implements Module {
 
 	/**
 	 * Run cache maintenance, deleting all cache entries that were
-	 * added with CacheRedis::expireSave
-	 *
+	 * added with CacheRedis::expireSave or that were added with
+	 * a selector that matches the page being saved.
 	 */
-	public function maintenanceSave() {
+	public function maintenanceSave(HookEvent $event) {
+		// Do nothing if not connected
 		if(! $this->connected) return;
 		$this->session->message("maintenanceSave");
-		$expireKey = md5("expireSave");
+		
+		$page = $event->arguments(0);
+		
+		// Delete all caches that have "expireSave" set
+		$expireKey = sha1("expireSave");
 		while(($key = $this->redis->sPop($expireKey)) !== false) {
 			$this->redis->message("Deleting cache entry for $key");
 			$this->delete($key);
 		}
+		
+		// Delete caches with a selector that matches the saved page
+		$expireKey = sha1("expireSelector");
+		$selectors = $this->redis->lRange($expireKey, 0, -1);
+		if(is_array($selectors)) {
+			foreach($selectors as $selector) {
+				if($page->matches($selector)) {
+					$caches = $this->getExpiresForSelector($selector);
+					foreach($caches as $cache) {
+						$this->delete($cache);
+						$this->removeExpireSelector($selector, $cache);
+					}
+				}
+			}
+		} else {
+		}
 	}
 
+
+	protected function getExpiresForSelector($selector) {
+		if(! $this->connected) return;
+		$expireKey = $this->stringToAscii($selector);
+		$keyList = $this->redis->lRange($expireKey, 0 , -1);
+		return array_unique($keyList);
+	}
 	
 	protected function setExpireSave($name) {
 		if(! $this->connected) return;
-		$expireKey = md5("expireSave");
+		$expireKey = sha1("expireSave");
 		$this->redis->sAdd($expireKey, $name);
+	}
+
+
+	protected function setExpireSelector($selectorstring, $name) {
+		if(! $this->connected) return;
+		$expireKey = $this->stringToAscii($selectorstring);
+		$this->addToList(sha1("expireSelector"), $selectorstring);
+		$this->addToList($expireKey, $name);
+	}
+	
+	protected function addToList($key, $value) {
+		$this->redis->rPush($key, $value);
+	}
+	
+	
+	protected function removeExpireSelector($selectorstring, $name) {
+		if(! $this->connected) return;
+		$expireKey = $this->stringToAscii($selectorstring);
+		$this->removeFromList($expireKey, $name);
+		if($this->redis->lLen($expireKey) === 0) $this->redis->del($expireKey);
+		$this->removeFromList(sha1("expireSelector"), $selectorstring);
+	}
+
+	protected function removeFromList($key, $value) {
+		$this->redis->lRem($key, $value);
+	}
+	
+	
+
+	protected function stringToAscii($input) {
+		$output = [];
+		if($input == null) return "";
+		for($i = 0; $i < mb_strlen($input); $i++) {
+			$output[] = $this->ordutf8(mb_substr($input, $i, 1));
+		}
+		return implode('-', $output);
+	}
+
+	
+	protected function asciiToString($input) {
+		$output = [];
+		if($input == null) return "";
+		return implode('', array_map(function($asc) {
+			return $this->chrutf8($asc);
+		}, explode('-', $input)));
+	}
+
+
+	protected function ordutf8($string) {
+		if(version_compare(PHP_VERSION, "7.2", ">=")) return mb_ord($string);
+	    $code = ord(substr($string, $offset,1));
+	    if ($code >= 128) {        //otherwise 0xxxxxxx
+	        if ($code < 224) $bytesnumber = 2;                //110xxxxx
+	        else if ($code < 240) $bytesnumber = 3;        //1110xxxx
+	        else if ($code < 248) $bytesnumber = 4;    //11110xxx
+	        $codetemp = $code - 192 - ($bytesnumber > 2 ? 32 : 0) - ($bytesnumber > 3 ? 16 : 0);
+	        for ($i = 2; $i <= $bytesnumber; $i++) {
+	            $offset ++;
+	            $code2 = ord(substr($string, $offset, 1)) - 128;        //10xxxxxx
+	            $codetemp = $codetemp*64 + $code2;
+	        }
+	        $code = $codetemp;
+	    }
+	    $offset += 1;
+	    if ($offset >= strlen($string)) $offset = -1;
+	    return $code;
+	}
+
+	
+	protected function chrutf8($numval) {
+		if(version_compare(PHP_VERSION, "7.2", ">=")) return mb_chr($numval);
+		return mb_convert_encoding('&#' . intval($numval) . ';', 'UTF-8', 'HTML-ENTITIES');
 	}
 
 
@@ -365,7 +508,7 @@ class CacheRedis extends WireData implements Module {
 		if($ns === false) {
 			// namespace not allowed (cache name is NAME only)
 			while(strpos($name, '__') !== false) $name = str_replace('__', '_', $name);
-			if(strlen($name) > $maxLength) $name = md5($name);
+			if(strlen($name) > $maxLength) $name = sha1($name);
 			return $name;
 		}
 
@@ -392,12 +535,12 @@ class CacheRedis extends WireData implements Module {
 			// has namespace
 			list($ns, $name) = explode('__', $name, 2);
 			while(strpos($name, '__') !== false) $name = str_replace('__', '_', $name);
-			if(strlen($name) > 32) $name = md5($name);
-			if(strlen($ns . '__' . $name) > $maxLength) $ns = md5($ns); // not likely
+			if(strlen($name) > 32) $name = sha1($name);
+			if(strlen($ns . '__' . $name) > $maxLength) $ns = sha1($ns); // not likely
 			$name = $ns . '__' . $name;
 		} else {
 			// no namespace
-			$name = md5($name);
+			$name = sha1($name);
 		}
 
 		return $name;
