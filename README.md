@@ -8,7 +8,7 @@ This module provides a simple interface to the [phpredis](https://github.com/php
 Compatible with ProcessWire 3.x
 
 ## Status
-Beta, use with care
+Rough Beta, use with care
 
 ## Prerequisites
 The phpredis extension must be installed.
@@ -77,6 +77,8 @@ echo $redis->renderFile('partials/primary-nav.php', 3600);
 	 - Specify the future date you want it to expire (any value above 2592000 will be treated as a unix timestamp).
 	 - Specify `CacheRedis::expireNever` to prevent expiration.
 	 - Specify `CacheRedis::expireSave` to expire when any page or template is saved.
+	 - Specify a selector string. In that case, whenever a page is saved that matches the selector, the cache for the file is cleared.
+	 - You can specify multiple selectors as an array. This can make sense with multiple selectors and/or if you want to specify selector expiry and a maximum lifetime.
 	 - Omit for default value, which is `CacheRedis::expireDaily`. 
 
 - array `$options`
