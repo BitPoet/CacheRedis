@@ -38,13 +38,29 @@ Retrieve a value from the cache by the given name. If $func is given and no cach
 
 Alternatively, you can pass an array of names to the method. In that case, an associative array of names and values is returned, with only those keys present that were found in the cache. If you do that, you must not pass a $func parameter.
 
+#### $redis->fetchFor($ns, $name)
+
+Retrieve a value from the cache by then given name in the given namespace.
+
+Pass in '' (empty string) in $name to fetch all values in that namespace as an associative array.
+
 #### $redis->store($name, $expire, $value)
 
 Save the value in the cache with the given name as the key and the specified expire time. If $expire is not set, CacheRedis::expireDaily is assumed (24h).
 
+#### $redis->storeFor($fn, $name, $expire, $value)
+
+Save the value in the cache in the given namespace with the given name as the key and the specified expire time. If $expire is not set, CacheRedis::expireDaily is assumed (24h).
+
 #### $redis->delete($name)
 
 Deletes the entry with the given key name from the cache.
+
+#### $redis->deleteFor($ns, $name)
+
+Deletes the entry with the given key name in the given namespace from the cache.
+
+Pass '' (empty string) in $name to delete all entries in the namespace.
 
 #### $redis->flush()
 
@@ -91,6 +107,12 @@ echo $redis->renderFile('partials/primary-nav.php', 3600);
 *Return*
 
 string|bool Rendered template file or boolean false on fatal error (and throwExceptions disabled)
+
+## Changes
+
+### 0.1.0
+
+- Add namespace methods
 
 ## License
 

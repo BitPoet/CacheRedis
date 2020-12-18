@@ -42,7 +42,7 @@ class CacheRedis extends WireData implements Module {
 		return [
 			"title"		=>	_x("ProcessWire Redis Cache", __FILE__),
 			"summary"	=>	_x("Simple interface to Redis storage", __FILE__),
-			"version"	=>	"0.0.2",
+			"version"	=>	"0.1.0",
 			"autoload"	=>	true,
 			"singular"	=>	true
 		];
@@ -252,10 +252,11 @@ class CacheRedis extends WireData implements Module {
 	 */
 	public function delete($name) {
 		if(! $this->connected)
-			return;
+			return false;
 		if(! is_array($name))
 			$name = [$name];
 		$this->redis->del($name);
+		return true;
 	}
 	
 	/**
@@ -264,7 +265,7 @@ class CacheRedis extends WireData implements Module {
 	 */
 	public function flush() {
 		if(! $this->connected)
-			return;
+			return false;
 		$this->redis->flushAll();
 	}
 
@@ -544,6 +545,157 @@ class CacheRedis extends WireData implements Module {
 		}
 
 		return $name;
+	}
+
+	/**
+	 * Same as fetch() but with namespace
+	 * 
+	 * Namespace is useful to avoid cache name collisions. The ProcessWire core commonly uses cache 
+	 * namespace to bind cache values to the object class, which often make a good namespace. 
+	 * 
+	 * Please see the `$cache->get()` method for usage of all arguments. 
+	 * 
+	 * ~~~~~
+	 * // specify namespace as a string
+	 * $value = $cache->getFor('my-namespace', 'my-cache-name');
+	 * 
+	 * // or specify namespace is an object instance
+	 * $value = $cache->get($this, 'my-cache-name'); 
+	 * ~~~~~
+	 * 
+	 * @param string|object $ns Namespace
+	 * @param string $name Cache name
+	 * @param null|int|string $expire Optional expiration
+	 * @param callable|null $func Optional cache generation function
+	 * @return string|array|PageArray|mixed|null Returns null if cache doesn’t exist and no generation function provided. 
+	 * @see WireCache::get()
+	 * 
+	 */
+	public function fetchFor($ns, $name, $expire = null, $func = null) {
+		if(is_object($ns)) $ns = wireClassName($ns, false); 
+		if(!is_array($name) && $name === '') return $this->fetchAllFor($ns);
+		$value = $this->fetch($ns . "__$name", $expire, $func);
+		$value = preg_replace('~^.*?__~', '', $value);
+		return $value;
+	}
+
+	public function fetchAllFor($ns) {
+		if(is_object($ns)) $ns = wireClassName($ns, false); 
+		$allKeys = [];
+		$it = NULL;
+		while($keys = $this->redis->scan($it, $ns . "__*", 500)) {
+			foreach($keys as $k) {
+				$value = $this->redis->get($k);
+				$value = preg_replace('~^.*?__~', '', $value);
+				$allKeys[$k] = $value;
+			}
+		}
+		return $allKeys;
+	}
+
+	/**
+	 * Same as store() except with namespace
+	 * 
+	 * Namespace is useful to avoid cache name collisions. The ProcessWire core commonly uses cache
+	 * namespace to bind cache values to the object class, which often make a good namespace.
+	 * 
+	 * ~~~~~
+	 * // save cache using manually specified namespace
+	 * $cache->storeFor("my-namespace", "my-cache-name", $value);
+	 * 
+	 * // save cache using namespace of current object
+	 * $cache->storeFor($this, "my-cache-name", $value); 
+	 * ~~~~~
+	 *
+	 * @param string|object $ns Namespace for cache
+	 * @param string $name Name of cache, can be any string up to 255 chars
+	 * @param string|array|PageArray $data Data that you want to cache
+	 * @param int|Page $expire Lifetime of this cache, in seconds, OR one of the following:
+	 *  - Specify one of the `WireCache::expire*` constants.
+	 *  - Specify the future date you want it to expire (as unix timestamp or any strtotime compatible date format)
+	 *  - Provide a `Page` object to expire when any page using that template is saved.
+	 *  - Specify `WireCache::expireNever` to prevent expiration.
+	 *  - Specify `WireCache::expireSave` to expire when any page or template is saved.
+	 *  - Specify selector string matching pages that, when saved, expire the cache.
+	 * @return bool Returns true if cache was successful, false if not
+	 * 
+	 */
+	public function storeFor($ns, $name, $data, $expire = self::expireDaily) {
+		if(is_object($ns)) $ns = wireClassName($ns, false);
+		return $this->store($ns . "__$name", $expire, $data); 
+	}
+
+	/**
+	 * Same as storeList() except with namespace
+	 * 
+	 * Namespace is useful to avoid cache name collisions. The ProcessWire core commonly uses cache
+	 * namespace to bind cache values to the object class, which often make a good namespace.
+	 * 
+	 * ~~~~~
+	 * // save cache using manually specified namespace
+	 * $cache->storeFor("my-namespace", "my-cache-name", $value);
+	 * 
+	 * // save cache using namespace of current object
+	 * $cache->storeFor($this, "my-cache-name", $value); 
+	 * ~~~~~
+	 *
+	 * @param string|object $ns Namespace for cache
+	 * @param string $name Name of cache, can be any string up to 255 chars
+	 * @param array|PageArray $data Data that you want to cache as key => value pairs
+	 * @param int|Page $expire Lifetime of this cache, in seconds, OR one of the following:
+	 *  - Specify one of the `WireCache::expire*` constants.
+	 *  - Specify the future date you want it to expire (as unix timestamp or any strtotime compatible date format)
+	 *  - Provide a `Page` object to expire when any page using that template is saved.
+	 *  - Specify `WireCache::expireNever` to prevent expiration.
+	 *  - Specify `WireCache::expireSave` to expire when any page or template is saved.
+	 *  - Specify selector string matching pages that, when saved, expire the cache.
+	 * @return bool Returns true if cache was successful, false if not
+	 * 
+	 */
+	public function storeListFor($ns, $name, $data, $expire = self::expireDaily) {
+		if(is_object($ns)) $ns = wireClassName($ns, false);
+		return $this->storeList($ns . "__$name", $expire, $data); 
+	}
+
+	/**
+	 * Delete one or more caches in a given namespace
+	 * 
+	 * ~~~~~
+	 * // Delete all in namespace
+	 * $cache->deleteFor("my-namespace"); 
+	 * 
+	 * // Delete one cache in namespace
+	 * $cache->deleteFor("my-namespace", "my-cache-name"); 
+	 * ~~~~~
+	 *
+	 * @param string $ns Namespace of cache.
+	 * @param string $name Name of cache. If none specified, all for namespace are deleted.
+	 * @param bool $force (optional, default FALSE) Force immediate deletion, for the price of blocking the server for the duration.
+	 * @return bool True on success, false on failure
+	 *
+	 */
+	public function deleteFor($ns, $name = '', $force = false) {
+		if(is_object($ns)) $ns = wireClassName($ns, false);
+		if(!strlen($name)) return $this->deleteAllFor($ns);
+		return $this->delete($ns . "__$name");
+	}
+
+
+	protected function deleteAllFor($ns, $foce = false) {
+		$redisServer = $this->redis->info("server");
+		$redisVersion = $redisServer["redis_version"];
+		$it = NULL;
+		while($keys = $r->scan($it, $ns . "__*", 500)) {
+			foreach($keys as $key) {
+				# Starting with redis 4.0.0, there is non-blocking UNLINK,
+				# otherwise use blocking DEL
+				if(version_compare($redisVersion, "4.0.0", ">="))
+					$this->redis->unlink($key);
+				else
+					$this->redis->del($key);
+			}
+		}
+		return $force;
 	}
 
 }
