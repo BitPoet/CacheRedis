@@ -42,7 +42,7 @@ class CacheRedis extends WireData implements Module {
 		return [
 			"title"		=>	_x("ProcessWire Redis Cache", __FILE__),
 			"summary"	=>	_x("Simple interface to Redis storage", __FILE__),
-			"version"	=>	"0.1.0",
+			"version"	=>	"0.1.1",
 			"autoload"	=>	true,
 			"singular"	=>	true
 		];
@@ -685,7 +685,7 @@ class CacheRedis extends WireData implements Module {
 		$redisServer = $this->redis->info("server");
 		$redisVersion = $redisServer["redis_version"];
 		$it = NULL;
-		while($keys = $r->scan($it, $ns . "__*", 500)) {
+		while($keys = $this->redis->scan($it, $ns . "__*", 500)) {
 			foreach($keys as $key) {
 				# Starting with redis 4.0.0, there is non-blocking UNLINK,
 				# otherwise use blocking DEL
