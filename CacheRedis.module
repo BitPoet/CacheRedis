@@ -681,7 +681,7 @@ class CacheRedis extends WireData implements Module {
 	}
 
 
-	protected function deleteAllFor($ns, $foce = false) {
+	protected function deleteAllFor($ns, $force = false) {
 		$redisServer = $this->redis->info("server");
 		$redisVersion = $redisServer["redis_version"];
 		$it = NULL;
