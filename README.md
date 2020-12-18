@@ -56,11 +56,13 @@ Save the value in the cache in the given namespace with the given name as the ke
 
 Deletes the entry with the given key name from the cache.
 
-#### $redis->deleteFor($ns, $name)
+#### $redis->deleteFor($ns, $name, [$force])
 
 Deletes the entry with the given key name in the given namespace from the cache.
 
 Pass '' (empty string) in $name to delete all entries in the namespace.
+
+Set $force to true to use the slower synchronous DEL behind the scenes.
 
 #### $redis->flush()
 

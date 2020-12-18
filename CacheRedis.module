@@ -42,7 +42,7 @@ class CacheRedis extends WireData implements Module {
 		return [
 			"title"		=>	_x("ProcessWire Redis Cache", __FILE__),
 			"summary"	=>	_x("Simple interface to Redis storage", __FILE__),
-			"version"	=>	"0.1.1",
+			"version"	=>	"0.1.2",
 			"autoload"	=>	true,
 			"singular"	=>	true
 		];
@@ -689,7 +689,7 @@ class CacheRedis extends WireData implements Module {
 			foreach($keys as $key) {
 				# Starting with redis 4.0.0, there is non-blocking UNLINK,
 				# otherwise use blocking DEL
-				if(version_compare($redisVersion, "4.0.0", ">="))
+				if(!$force && version_compare($redisVersion, "4.0.0", ">="))
 					$this->redis->unlink($key);
 				else
 					$this->redis->del($key);
