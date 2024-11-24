@@ -291,7 +291,7 @@ class CacheRedis extends WireData implements Module {
 	 *   Can be full path/file, or dir/file relative to current work directory (which is typically /site/templates/).
 	 *   If providing a file relative to current dir, it should not start with "/". 
 	 *   File must be somewhere within site/templates/, site/modules/ or wire/modules/, or provide your own `allowedPaths` option. 
-	 *   Please note that $filename receives API variables already (you don’t have to provide them).
+	 *   Please note that $filename receives API variables already (you donâ€™t have to provide them).
 	 * @param int|Page|string|array|null $expire Lifetime of this cache, in seconds, OR one of the following:
 	 *  - Specify one of the `CacheRedis::expire*` constants.
 	 *  - Specify the future date you want it to expire (as unix timestamp )
@@ -307,7 +307,7 @@ class CacheRedis extends WireData implements Module {
 	 *  - `allowedPaths` (array): Array of paths that are allowed (default is anywhere within templates, core modules and site modules)
 	 *  - `throwExceptions` (bool): Throw exceptions when fatal error occurs? (default=true)
 	 * @return string|bool Rendered template file or boolean false on fatal error (and throwExceptions disabled)
-	 * @throws WireException if given file doesn’t exist
+	 * @throws WireException if given file doesnâ€™t exist
 	 * @see WireFileTools::render()
 	 *
 	 */
@@ -357,10 +357,10 @@ class CacheRedis extends WireData implements Module {
 
 			if(! is_array($expire)) $expire = [$expire];
 			foreach($expire as $exp) {
-				$expireStore = (ctype_digit($exp) || $exp == self::expireSave) ? $exp : 0;
+				$expireStore = (ctype_digit((string)$exp) || $exp == self::expireSave) ? $exp : 0;
 				$this->storeList($cacheName, $expireStore, [$mtime, $out]);
 				if($exp == self::expireSave) $this->setExpireSave($cacheName);
-				if(! ctype_digit($expire)) {
+				if(!ctype_digit($exp)) {
 					$this->setExpireSelector($exp, $cacheName);
 				}
 			}
